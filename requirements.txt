@@ -1,0 +1,5 @@
+Django==6.1.3
+djangorestframework==3.18.3
+django-simpleui==2026.1.13
+django-cors-headers==4.9.0
+Pillow==13.0.0
