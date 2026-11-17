@@ -1,0 +1,12 @@
+{
+  "name": "skatespot-root",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix skatespot install && npm --prefix skatespot run build",
+    "dev": "npm --prefix skatespot run dev",
+    "preview": "npm --prefix skatespot run preview"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
