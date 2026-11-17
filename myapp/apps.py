@@ -30,3 +30,13 @@ class MyappConfig(AppConfig):
                 )
         except Exception:
             pass
+
+        try:
+            from myapp.management.commands.seed_spots import SPOTS
+            from myapp.models import SkateSpot
+
+            if SkateSpot.objects.count() == 0:
+                for item in SPOTS:
+                    SkateSpot.objects.get_or_create(name=item['name'], defaults=item)
+        except Exception:
+            pass
