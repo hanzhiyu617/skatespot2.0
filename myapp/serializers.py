@@ -48,7 +48,7 @@ class ReviewSerializer(serializers.ModelSerializer):
     class Meta:
         model = Review
         fields = ['id', 'spot', 'author', 'text', 'image_url', 'created_at']
-        read_only_fields = ['id', 'image_url', 'created_at']
+        read_only_fields = ['id', 'spot', 'image_url', 'created_at']
 
     def get_image_url(self, obj):
         return obj.image_data or (obj.image.url if obj.image else None)
