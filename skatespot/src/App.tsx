@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Filter,
   ImagePlus,
+  List,
   MapPin,
   Navigation,
   Plus,
@@ -501,11 +502,13 @@ function MapView({
   city,
   selectedId,
   onSelect,
+  visible = true,
 }: {
   spots: Spot[]
   city: CityKey
   selectedId: string | null
   onSelect: (id: string) => void
+  visible?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -537,6 +540,10 @@ function MapView({
   useEffect(() => {
     mapRef.current?.flyTo(cityInfo[city].center, cityInfo[city].zoom, { duration: 0.8 })
   }, [city])
+
+  useEffect(() => {
+    if (visible) window.setTimeout(() => mapRef.current?.invalidateSize(), 120)
+  }, [visible])
 
   useEffect(() => {
     const map = mapRef.current
@@ -667,10 +674,12 @@ function SpotDetail({
   spot,
   onBack,
   onAddReview,
+  onShowMap,
 }: {
   spot: Spot
   onBack: () => void
   onAddReview: (id: string, text: string) => void
+  onShowMap?: () => void
 }) {
   const [reviewText, setReviewText] = useState('')
 
@@ -755,6 +764,16 @@ function SpotDetail({
           </button>
         </form>
       </section>
+
+      {onShowMap && (
+        <button
+          type="button"
+          onClick={onShowMap}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-full border border-gray-200 py-3.5 text-sm font-semibold text-ink transition hover:border-ink md:hidden"
+        >
+          <MapPin size={16} /> 在地图中查看
+        </button>
+      )}
 
       <a
         href={`https://map.naver.com/p/search/${encodeURIComponent(spot.koreanName || spot.name)}`}
@@ -1106,6 +1125,7 @@ export default function App() {
   const [filters, setFilters] = useState<Filters>({ types: [], terrains: [] })
   const [filterOpen, setFilterOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [mobileView, setMobileView] = useState<'list' | 'map'>('list')
 
   useEffect(() => {
     let cancelled = false
@@ -1192,7 +1212,11 @@ export default function App() {
 
   return (
     <div className="flex h-full w-full flex-col bg-white md:flex-row">
-      <aside className="flex h-1/2 w-full shrink-0 flex-col border-b border-gray-100 bg-white md:h-full md:w-[420px] md:border-b-0 md:border-r">
+      <aside
+        className={`${
+          mobileView === 'map' ? 'hidden' : 'flex'
+        } h-full w-full shrink-0 flex-col border-b border-gray-100 bg-white md:flex md:h-full md:w-[420px] md:border-b-0 md:border-r`}
+      >
         <header className="border-b border-gray-100 px-5 pb-4 pt-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
@@ -1219,13 +1243,13 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-5 rounded-2xl bg-gray-50 px-4 py-3.5">
+          <div className="mt-5 hidden rounded-2xl bg-gray-50 px-4 py-3.5 md:block">
             <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-accent">Explore Korea</p>
             <p className="mt-1 text-lg font-bold leading-snug text-ink">Find your line.<br />Find your spot.</p>
             <p className="mt-1 text-[11px] text-gray-500">从首尔到济州，发现属于你的滑板场地。</p>
           </div>
 
-          <div className="mt-6 flex items-end justify-between gap-3">
+          <div className="mt-4 flex items-end justify-between gap-3 md:mt-6">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-gray-400">Korea Skate Map</p>
               <h2 className="mt-1.5 text-3xl font-bold tracking-tight text-ink">
@@ -1269,7 +1293,12 @@ export default function App() {
         </header>
 
         {selectedSpot ? (
-          <SpotDetail spot={selectedSpot} onBack={() => setSelectedId(null)} onAddReview={addReview} />
+          <SpotDetail
+            spot={selectedSpot}
+            onBack={() => setSelectedId(null)}
+            onAddReview={addReview}
+            onShowMap={() => setMobileView('map')}
+          />
         ) : (
           <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
             {filteredSpots.length === 0 && (
@@ -1284,12 +1313,51 @@ export default function App() {
         )}
       </aside>
 
-      <main className="relative h-1/2 w-full flex-1 md:h-full">
-        <MapView spots={filteredSpots} city={city} selectedId={selectedId} onSelect={handleSelect} />
+      <main
+        className={`${
+          mobileView === 'list' ? 'hidden' : 'block'
+        } relative h-full w-full flex-1 md:block md:h-full`}
+      >
+        <MapView
+          spots={filteredSpots}
+          city={city}
+          selectedId={selectedId}
+          onSelect={handleSelect}
+          visible={mobileView === 'map'}
+        />
         <div className="pointer-events-none absolute left-4 top-4 rounded-full border border-gray-100 bg-white/80 px-4 py-2 text-[11px] font-medium text-gray-600 frosted">
           OpenStreetMap · Light · Korea
         </div>
       </main>
+
+      {mobileView === 'map' && selectedSpot && (
+        <div className="fixed bottom-24 left-4 right-4 z-[900] rounded-2xl border border-gray-100 bg-white/95 p-4 shadow-soft frosted md:hidden">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-ink">{selectedSpot.name}</p>
+              <p className="mt-0.5 truncate text-[11px] text-gray-500">
+                {selectedSpot.koreanName || selectedSpot.district}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMobileView('list')}
+              className="shrink-0 rounded-full bg-ink px-3 py-1.5 text-[11px] font-semibold text-white"
+            >
+              详情
+            </button>
+          </div>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setMobileView((prev) => (prev === 'list' ? 'map' : 'list'))}
+        className="fixed bottom-6 left-1/2 z-[950] flex -translate-x-1/2 items-center gap-2 rounded-full bg-ink px-5 py-3 text-sm font-semibold text-white shadow-soft md:hidden"
+      >
+        {mobileView === 'list' ? <MapPin size={16} /> : <List size={16} />}
+        {mobileView === 'list' ? '查看地图' : '返回列表'}
+      </button>
 
       {filterOpen && (
         <FilterModal
