@@ -16,6 +16,22 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
+const PIN_ART = `
+  <path d="M12 1.8a6.2 6.2 0 0 0-6.2 6.2c0 4.6 6.2 10.4 6.2 10.4s6.2-5.8 6.2-10.4A6.2 6.2 0 0 0 12 1.8z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+  <circle cx="12" cy="8" r="2.3" fill="none" stroke="currentColor" stroke-width="1.7"/>
+  <path d="M5.5 20.4c2.4 1.5 10.6 1.5 13 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+  <circle cx="8.6" cy="21.6" r="0.95" fill="currentColor"/>
+  <circle cx="15.4" cy="21.6" r="0.95" fill="currentColor"/>
+`
+
+function BrandMark({ size = 22 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <g dangerouslySetInnerHTML={{ __html: PIN_ART }} />
+    </svg>
+  )
+}
+
 interface ApiSpot {
   id: number
   name: string
@@ -31,6 +47,15 @@ interface ApiSpot {
   price_unit?: PriceUnit
   review?: string
   image_url?: string | null
+  reviews?: ApiReview[]
+}
+
+interface ApiReview {
+  id: number
+  author?: string
+  text: string
+  image_url?: string | null
+  created_at: string
 }
 
 type SpotType = 'indoor' | 'outdoor' | 'street'
@@ -60,10 +85,12 @@ interface Review {
   author: string
   text: string
   date: string
+  imageUrl?: string | null
 }
 
 interface Spot {
   id: string
+  imageUrl?: string | null
   name: string
   koreanName?: string
   city: CityKey
@@ -467,6 +494,13 @@ function apiSpotToSpot(item: ApiSpot): Spot {
     .split(',')
     .map((value) => value.trim())
     .filter((value): value is Terrain => terrainOptions.includes(value as Terrain))
+  const reviews = (item.reviews || []).map((review) => ({
+    id: `review-${review.id}`,
+    author: review.author || '滑手',
+    text: review.text,
+    date: new Date(review.created_at).toLocaleDateString('zh-CN'),
+    imageUrl: review.image_url || undefined,
+  }))
   return {
     id: `spot-${item.id}`,
     name: item.name,
@@ -480,7 +514,8 @@ function apiSpotToSpot(item: ApiSpot): Spot {
     priceUnit: item.price_unit || undefined,
     lat: item.latitude,
     lng: item.longitude,
-    reviews: [],
+    imageUrl: item.image_url || undefined,
+    reviews,
   }
 }
 
@@ -594,17 +629,16 @@ function MapView({
 
 function LocationPicker({
   city,
-  value,
   onChange,
 }: {
   city: CityKey
-  value: [number, number] | null
   onChange: (value: [number, number]) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.Marker | null>(null)
   const onChangeRef = useRef(onChange)
+  const [hasPick, setHasPick] = useState(false)
 
   useEffect(() => {
     onChangeRef.current = onChange
@@ -615,14 +649,33 @@ function LocationPicker({
     const map = L.map(containerRef.current, {
       zoomControl: false,
       attributionControl: false,
-    }).setView(cityInfo[city].center, 13)
+    }).setView(cityInfo[city].center, 14)
 
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
     L.control.zoom({ position: 'bottomright' }).addTo(map)
 
-    map.on('click', (event: L.LeafletMouseEvent) => {
-      onChangeRef.current([event.latlng.lat, event.latlng.lng])
+    const pinIcon = L.divIcon({
+      className: '',
+      html: '<div class="picker-pin"><svg viewBox="0 0 24 24" width="30" height="30">' + PIN_ART + '</svg></div>',
+      iconSize: [40, 44],
+      iconAnchor: [20, 42],
     })
+
+    const place = (position: [number, number]) => {
+      if (markerRef.current) {
+        markerRef.current.setLatLng(position)
+      } else {
+        markerRef.current = L.marker(position, { icon: pinIcon, draggable: true }).addTo(map)
+        markerRef.current.on('dragend', () => {
+          const moved = markerRef.current?.getLatLng()
+          if (moved) onChangeRef.current([moved.lat, moved.lng])
+        })
+      }
+      onChangeRef.current(position)
+      setHasPick(true)
+    }
+
+    map.on('click', (event: L.LeafletMouseEvent) => place([event.latlng.lat, event.latlng.lng]))
 
     mapRef.current = map
     window.setTimeout(() => map.invalidateSize(), 100)
@@ -636,24 +689,53 @@ function LocationPicker({
   }, [])
 
   useEffect(() => {
-    mapRef.current?.flyTo(cityInfo[city].center, 13, { duration: 0.5 })
-    onChangeRef.current(cityInfo[city].center)
-  }, [city])
-
-  useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    const el = containerRef.current
+    if (!map || !el || !el.clientWidth || !el.clientHeight) return
+    map.setView(cityInfo[city].center, 14, { animate: false })
     if (markerRef.current) {
       markerRef.current.remove()
       markerRef.current = null
     }
-    if (value) {
-      markerRef.current = L.marker(value).addTo(map)
-      map.setView(value, 15, { animate: false })
-    }
-  }, [value])
+    onChangeRef.current(cityInfo[city].center)
+    setHasPick(false)
+  }, [city])
 
-  return <div ref={containerRef} style={{ height: 176 }} className="w-full rounded-xl border border-gray-200" />
+  const recenter = () => {
+    const map = mapRef.current
+    if (!map) return
+    map.setView(cityInfo[city].center, 14)
+    if (markerRef.current) {
+      markerRef.current.remove()
+      markerRef.current = null
+    }
+    onChangeRef.current(cityInfo[city].center)
+    setHasPick(false)
+  }
+
+  return (
+    <div className="relative w-full overflow-hidden rounded-xl border border-gray-200">
+      <div ref={containerRef} style={{ height: 208 }} className="w-full picker-map" />
+      <div className="pointer-events-none absolute left-3 top-3 z-[500] rounded-full border border-gray-100 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-gray-700 frosted">
+        {hasPick ? '已选点 · 可拖动图钉微调' : '点击地图任意位置选点'}
+      </div>
+      <button
+        type="button"
+        onClick={recenter}
+        className="absolute bottom-3 left-3 z-[500] rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm transition hover:border-ink"
+      >
+        回到{cityInfo[city].label}中心
+      </button>
+    </div>
+  )
+}
+
+function SpotImage({ src, alt, className }: { src?: string | null; alt: string; className: string }) {
+  const [failed, setFailed] = useState(false)
+  if (src && !failed) {
+    return <img src={src} alt={alt} className={`${className} object-cover`} onError={() => setFailed(true)} />
+  }
+  return <div className={`gray-block ${className}`} />
 }
 
 function SpotCard({ spot, onClick }: { spot: Spot; onClick: () => void }) {
@@ -663,7 +745,7 @@ function SpotCard({ spot, onClick }: { spot: Spot; onClick: () => void }) {
       onClick={onClick}
       className="group flex w-full gap-4 rounded-2xl border border-gray-100 bg-white p-4 text-left transition duration-200 hover:border-gray-300 hover:shadow-soft"
     >
-      <div className="gray-block h-20 w-20 shrink-0 rounded-xl" />
+      <SpotImage src={spot.imageUrl} alt={spot.name} className="h-20 w-20 shrink-0 rounded-xl" />
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <h3 className="truncate text-base font-semibold text-ink">{spot.name}</h3>
@@ -679,7 +761,7 @@ function SpotCard({ spot, onClick }: { spot: Spot; onClick: () => void }) {
           ))}
           {spot.terrains.length > 2 && <Tag tone="muted">+{spot.terrains.length - 2}</Tag>}
         </div>
-        {spot.type === 'indoor' && spot.price && (
+        {spot.price && (
           <p className="mt-2 text-xs font-semibold text-accent">{formatPrice(spot)}</p>
         )}
       </div>
@@ -695,16 +777,20 @@ function SpotDetail({
 }: {
   spot: Spot
   onBack: () => void
-  onAddReview: (id: string, text: string) => void
+  onAddReview: (id: string, text: string, image?: File) => void
   onShowMap?: () => void
 }) {
   const [reviewText, setReviewText] = useState('')
+  const [reviewImage, setReviewImage] = useState<File | null>(null)
+  const [reviewImageUrl, setReviewImageUrl] = useState('')
 
   const submitReview = (event: FormEvent) => {
     event.preventDefault()
-    if (!reviewText.trim()) return
-    onAddReview(spot.id, reviewText.trim())
+    if (!reviewText.trim() && !reviewImage) return
+    onAddReview(spot.id, reviewText.trim(), reviewImage || undefined)
     setReviewText('')
+    setReviewImage(null)
+    setReviewImageUrl('')
   }
 
   return (
@@ -723,16 +809,14 @@ function SpotDetail({
         <MapPin size={14} /> {spot.address}
       </p>
 
-      <div className="gray-block mt-5 h-52 w-full rounded-2xl" />
+      <SpotImage src={spot.imageUrl} alt={spot.name} className="mt-5 h-52 w-full rounded-2xl" />
 
       <div className="mt-4 flex flex-wrap gap-2">
         <Tag tone={spot.type === 'indoor' ? 'accent' : 'default'}>{typeLabels[spot.type]}</Tag>
         {spot.terrains.map((terrain) => (
           <Tag key={terrain} tone="muted">{terrainLabels[terrain]}</Tag>
         ))}
-        {spot.type === 'indoor' && spot.price && (
-          <Tag tone="accent">{formatPrice(spot)}</Tag>
-        )}
+        {spot.price && <Tag tone="accent">{formatPrice(spot)}</Tag>}
       </div>
 
       <section className="mt-7">
@@ -762,6 +846,13 @@ function SpotDetail({
                 <span className="text-[11px] text-gray-400">{review.date}</span>
               </div>
               <p className="mt-2 text-sm leading-relaxed text-gray-600">{review.text}</p>
+              {review.imageUrl && (
+                <img
+                  src={review.imageUrl}
+                  alt="评价图片"
+                  className="mt-3 max-h-56 w-full rounded-xl object-cover"
+                />
+              )}
             </div>
           ))}
         </div>
@@ -773,6 +864,23 @@ function SpotDetail({
             rows={3}
             className="w-full resize-none rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-accent"
           />
+          <label className="mt-2 flex cursor-pointer items-center gap-2 rounded-xl border border-dashed border-gray-300 px-4 py-2.5 text-xs text-gray-500 transition hover:border-accent">
+            <ImagePlus size={14} />
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0] || null
+                setReviewImage(file)
+                setReviewImageUrl(file ? URL.createObjectURL(file) : '')
+              }}
+            />
+            {reviewImage ? '已选择图片，点击可更换' : '添加图片（可选）'}
+          </label>
+          {reviewImageUrl && (
+            <img src={reviewImageUrl} alt="评价图片预览" className="mt-2 h-24 w-24 rounded-lg object-cover" />
+          )}
           <button
             type="submit"
             className="mt-2 w-full rounded-full border border-gray-200 py-2.5 text-sm font-medium text-ink transition hover:border-ink"
@@ -923,8 +1031,8 @@ function UploadModal({
   const [priceUnit, setPriceUnit] = useState<PriceUnit>('session')
   const [terrains, setTerrains] = useState<Terrain[]>([])
   const [review, setReview] = useState('')
-  const [hasImage, setHasImage] = useState(false)
   const [imageFile, setImageFile] = useState<File | null>(null)
+  const [imagePreview, setImagePreview] = useState('')
   const [coords, setCoords] = useState<[number, number] | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitMessage, setSubmitMessage] = useState('')
@@ -952,8 +1060,8 @@ function UploadModal({
         district: district.trim(),
         type,
         terrains,
-        price: type === 'indoor' ? price.trim() || '₩15,000' : undefined,
-        priceUnit: type === 'indoor' ? priceUnit : undefined,
+        price: price.trim() || undefined,
+        priceUnit: priceUnit,
         lat: coords?.[0],
         lng: coords?.[1],
         image: imageFile || undefined,
@@ -966,7 +1074,7 @@ function UploadModal({
       setTerrains([])
       setReview('')
       setImageFile(null)
-      setHasImage(false)
+      setImagePreview('')
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : '提交失败，请稍后重试')
     } finally {
@@ -1024,10 +1132,9 @@ function UploadModal({
           </select>
         </div>
 
-        {type === 'indoor' && (
-          <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1.5 block text-xs font-semibold text-gray-500">入场价格</label>
+              <label className="mb-1.5 block text-xs font-semibold text-gray-500">入场价格（可选）</label>
               <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="₩15,000" className={inputClass} />
             </div>
             <div>
@@ -1038,8 +1145,7 @@ function UploadModal({
                 ))}
               </select>
             </div>
-          </div>
-        )}
+        </div>
 
         <div>
           <div className="mb-2 flex items-center justify-between gap-2">
@@ -1053,7 +1159,7 @@ function UploadModal({
               先用 Naver 地图查地址
             </a>
           </div>
-          <LocationPicker city={city} value={coords} onChange={setCoords} />
+          <LocationPicker city={city} onChange={setCoords} />
           <p className="mt-1.5 text-[11px] text-gray-400">
             {coords
               ? `已选坐标：${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}（点击地图可重新选择）`
@@ -1094,7 +1200,7 @@ function UploadModal({
 
         <div>
           <label className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-gray-500">
-            <ImagePlus size={14} /> 上传图片（预览为灰色占位块）
+            <ImagePlus size={14} /> 上传场地图片
           </label>
           <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-gray-300 px-4 py-3 transition hover:border-accent">
             <input
@@ -1102,12 +1208,17 @@ function UploadModal({
               accept="image/*"
               className="hidden"
               onChange={(e) => {
-                setImageFile(e.target.files?.[0] || null)
-                setHasImage(Boolean(e.target.files?.[0]))
+                const file = e.target.files?.[0] || null
+                setImageFile(file)
+                setImagePreview(file ? URL.createObjectURL(file) : '')
               }}
             />
-            <div className={`h-12 w-12 rounded-lg ${hasImage ? 'gray-block' : 'border border-gray-200 bg-gray-50'}`} />
-            <span className="text-xs text-gray-500">{hasImage ? '已选择图片（灰色占位）' : '点击选择本地图片'}</span>
+            {imagePreview ? (
+              <img src={imagePreview} alt="预览" className="h-12 w-12 rounded-lg object-cover" />
+            ) : (
+              <div className="h-12 w-12 rounded-lg border border-gray-200 bg-gray-50" />
+            )}
+            <span className="text-xs text-gray-500">{imageFile ? imageFile.name : '点击选择本地图片'}</span>
           </label>
         </div>
 
@@ -1186,14 +1297,30 @@ export default function App() {
     setSelectedId(null)
   }
 
-  const addReview = (id: string, text: string) => {
-    const review: Review = {
-      id: `review-${Date.now()}`,
-      author: '我',
-      text,
-      date: new Date().toLocaleDateString('zh-CN'),
-    }
-    setSpots((prev) => prev.map((spot) => (spot.id === id ? { ...spot, reviews: [...spot.reviews, review] } : spot)))
+  const addReview = (id: string, text: string, image?: File) => {
+    const spotId = Number(id.replace('spot-', ''))
+    const payload = new FormData()
+    payload.append('author', '我')
+    payload.append('text', text || '分享一张场地照片')
+    if (image) payload.append('image', image)
+
+    fetch(`${API_BASE}/api/spots/${spotId}/reviews/`, {
+      method: 'POST',
+      body: payload,
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!data) return
+        const review: Review = {
+          id: `review-${data.id}`,
+          author: data.author || '我',
+          text: data.text,
+          date: new Date(data.created_at).toLocaleDateString('zh-CN'),
+          imageUrl: data.image_url || undefined,
+        }
+        setSpots((prev) => prev.map((spot) => (spot.id === id ? { ...spot, reviews: [review, ...spot.reviews] } : spot)))
+      })
+      .catch(() => undefined)
   }
 
   const submitApplication = async (input: NewSpotInput) => {
@@ -1205,6 +1332,8 @@ export default function App() {
     payload.append('district', input.district)
     payload.append('venue_type', input.type)
     payload.append('terrains', input.terrains.join(','))
+    payload.append('price', input.price || '')
+    payload.append('price_unit', input.priceUnit || 'session')
     payload.append('review', input.review)
     payload.append('latitude', String(input.lat ?? base[0]))
     payload.append('longitude', String(input.lng ?? base[1]))
@@ -1238,7 +1367,7 @@ export default function App() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="grid h-9 w-9 place-items-center rounded-xl bg-ink text-white">
-                <MapPin size={18} />
+                <BrandMark size={22} />
               </div>
               <h1 className="text-2xl font-bold tracking-tight text-ink">Skatespot</h1>
             </div>

@@ -1,4 +1,26 @@
+import base64
+import mimetypes
+
 from django.db import models
+
+
+def image_to_data_url(image_field):
+    """Read an ImageField and return a base64 data URL that survives redeploys."""
+    if not image_field:
+        return ''
+    try:
+        try:
+            image_field.seek(0)
+            content = image_field.read()
+        except (ValueError, OSError, AttributeError):
+            image_field.open('rb')
+            content = image_field.read()
+        if not content:
+            return ''
+        mime = mimetypes.guess_type(image_field.name)[0] or 'image/jpeg'
+        return 'data:{};base64,{}'.format(mime, base64.b64encode(content).decode('ascii'))
+    except Exception:
+        return ''
 
 
 class CityChoices(models.TextChoices):
@@ -63,10 +85,16 @@ class Contract(models.Model):
         '包含地形', max_length=255, blank=True,
         help_text='多个地形用英文逗号分隔，例如 ledge,bank,bowl',
     )
+    price = models.CharField('价格金额', max_length=50, blank=True)
+    price_unit = models.CharField(
+        '计费单位', max_length=20, choices=PriceUnitChoices.choices,
+        default=PriceUnitChoices.SESSION, blank=True,
+    )
     review = models.TextField('个人评价', blank=True)
     image = models.ImageField(
         '上传图片', upload_to='venue_apps/%Y/%m/%d/', blank=True, null=True
     )
+    image_data = models.TextField('图片数据（Base64）', blank=True)
     status = models.CharField(
         '状态', max_length=20, choices=StatusChoices.choices,
         default=StatusChoices.PENDING,
@@ -82,6 +110,11 @@ class Contract(models.Model):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        if self.image and not self.image_data:
+            self.image_data = image_to_data_url(self.image)
+        super().save(*args, **kwargs)
 
     def terrain_labels(self):
         labels = dict(TerrainChoices.choices)
@@ -115,6 +148,7 @@ class SkateSpot(models.Model):
     image = models.ImageField(
         '场地图片', upload_to='spots/%Y/%m/%d/', blank=True, null=True
     )
+    image_data = models.TextField('图片数据（Base64）', blank=True)
     is_active = models.BooleanField('前台展示', default=True)
     contract = models.OneToOneField(
         Contract, null=True, blank=True, on_delete=models.SET_NULL,
@@ -132,10 +166,43 @@ class SkateSpot(models.Model):
     def __str__(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        if self.image and not self.image_data:
+            self.image_data = image_to_data_url(self.image)
+        super().save(*args, **kwargs)
+
     def terrain_labels(self):
         labels = dict(TerrainChoices.choices)
         values = [item.strip() for item in self.terrains.split(',') if item.strip()]
         return ', '.join(labels.get(value, value) for value in values)
+
+
+class Review(models.Model):
+    spot = models.ForeignKey(
+        SkateSpot, related_name='reviews', on_delete=models.CASCADE,
+        verbose_name='场地',
+    )
+    author = models.CharField('昵称', max_length=100, default='滑手')
+    text = models.TextField('评价内容')
+    image = models.ImageField(
+        '评价图片', upload_to='reviews/%Y/%m/%d/', blank=True, null=True
+    )
+    image_data = models.TextField('图片数据（Base64）', blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        db_table = 'review'
+        verbose_name = '场地评价'
+        verbose_name_plural = '场地评价'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return '{} - {}'.format(self.spot.name, self.author)
+
+    def save(self, *args, **kwargs):
+        if self.image and not self.image_data:
+            self.image_data = image_to_data_url(self.image)
+        super().save(*args, **kwargs)
 
 
 def sync_contract_to_spot(contract):
@@ -152,9 +219,12 @@ def sync_contract_to_spot(contract):
         spot.latitude = contract.latitude
         spot.longitude = contract.longitude
         spot.terrains = contract.terrains
+        spot.price = contract.price
+        spot.price_unit = contract.price_unit
         spot.review = contract.review
         if contract.image:
             spot.image = contract.image
+            spot.image_data = contract.image_data
         spot.is_active = True
         spot.save()
     else:

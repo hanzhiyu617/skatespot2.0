@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Contract, SkateSpot
+from .models import Contract, Review, SkateSpot
 
 
 class ContractSerializer(serializers.ModelSerializer):
@@ -20,6 +20,8 @@ class ContractSerializer(serializers.ModelSerializer):
             'longitude',
             'terrains',
             'terrain_labels',
+            'price',
+            'price_unit',
             'review',
             'image',
             'image_url',
@@ -37,12 +39,25 @@ class ContractSerializer(serializers.ModelSerializer):
         ]
 
     def get_image_url(self, obj):
-        return obj.image.url if obj.image else None
+        return obj.image_data or (obj.image.url if obj.image else None)
+
+
+class ReviewSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Review
+        fields = ['id', 'spot', 'author', 'text', 'image_url', 'created_at']
+        read_only_fields = ['id', 'image_url', 'created_at']
+
+    def get_image_url(self, obj):
+        return obj.image_data or (obj.image.url if obj.image else None)
 
 
 class SkateSpotSerializer(serializers.ModelSerializer):
     terrain_labels = serializers.CharField(read_only=True)
     image_url = serializers.SerializerMethodField()
+    reviews = ReviewSerializer(many=True, read_only=True)
 
     class Meta:
         model = SkateSpot
@@ -64,9 +79,10 @@ class SkateSpotSerializer(serializers.ModelSerializer):
             'image',
             'image_url',
             'is_active',
+            'reviews',
             'created_at',
             'updated_at',
         ]
 
     def get_image_url(self, obj):
-        return obj.image.url if obj.image else None
+        return obj.image_data or (obj.image.url if obj.image else None)

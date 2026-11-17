@@ -67,6 +67,21 @@ button {
   transform: scale(1.35);
 }
 
+.picker-map .leaflet-container {
+  background: #f3f4f6;
+}
+
+.picker-pin {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: #171717;
+  color: #ffffff;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
 .gray-block {
   background: #e5e7eb;
 }

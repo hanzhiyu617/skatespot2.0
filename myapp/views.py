@@ -4,8 +4,8 @@ from rest_framework import generics, permissions, status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Contract, SkateSpot, StatusChoices, sync_contract_to_spot
-from .serializers import ContractSerializer, SkateSpotSerializer
+from .models import Contract, Review, SkateSpot, StatusChoices, sync_contract_to_spot
+from .serializers import ContractSerializer, ReviewSerializer, SkateSpotSerializer
 
 
 class VenueAppListCreate(generics.ListCreateAPIView):
@@ -40,6 +40,18 @@ class SkateSpotList(generics.ListAPIView):
 
     def get_queryset(self):
         return SkateSpot.objects.filter(is_active=True)
+
+
+class ReviewListCreate(generics.ListCreateAPIView):
+    serializer_class = ReviewSerializer
+    permission_classes = [permissions.AllowAny]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        return Review.objects.filter(spot_id=self.kwargs['pk'])
+
+    def perform_create(self, serializer):
+        serializer.save(spot_id=self.kwargs['pk'])
 
 
 class VenueAppStatusUpdate(APIView):
