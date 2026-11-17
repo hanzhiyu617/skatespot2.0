@@ -538,11 +538,27 @@ function MapView({
   }, [])
 
   useEffect(() => {
-    mapRef.current?.flyTo(cityInfo[city].center, cityInfo[city].zoom, { duration: 0.8 })
+    const map = mapRef.current
+    const el = containerRef.current
+    if (!map || !el || !el.clientWidth || !el.clientHeight) return
+    map.flyTo(cityInfo[city].center, cityInfo[city].zoom, { duration: 0.8 })
   }, [city])
 
   useEffect(() => {
-    if (visible) window.setTimeout(() => mapRef.current?.invalidateSize(), 120)
+    if (!visible) return
+    const timer = window.setTimeout(() => {
+      const map = mapRef.current
+      if (!map) return
+      map.invalidateSize()
+      const spot = spots.find((item) => item.id === selectedId)
+      if (spot) {
+        map.flyTo([spot.lat, spot.lng], 15, { duration: 0.6 })
+      } else {
+        map.flyTo(cityInfo[city].center, cityInfo[city].zoom, { animate: false })
+      }
+    }, 150)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
 
   useEffect(() => {
@@ -567,7 +583,8 @@ function MapView({
 
   useEffect(() => {
     const spot = spots.find((item) => item.id === selectedId)
-    if (spot && mapRef.current) {
+    const el = containerRef.current
+    if (spot && mapRef.current && el && el.clientWidth && el.clientHeight) {
       mapRef.current.flyTo([spot.lat, spot.lng], 15, { duration: 0.6 })
     }
   }, [selectedId, spots])
