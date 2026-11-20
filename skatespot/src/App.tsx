@@ -59,26 +59,14 @@ function koreaResults(items: GeocodeResult[]): GeocodeResult[] {
 async function geocode(query: string): Promise<GeocodeResult[]> {
   if (!query.trim()) return []
   try {
-    if (STADIA_KEY) {
-      const url = `https://api.stadiamaps.com/geocoding/v1/autocomplete?text=${encodeURIComponent(query)}&api_key=${STADIA_KEY}&limit=5&boundary.country=KOR&boundary.rect.min_lat=${KOREA.minLat}&boundary.rect.min_lon=${KOREA.minLng}&boundary.rect.max_lat=${KOREA.maxLat}&boundary.rect.max_lon=${KOREA.maxLng}`
-      const response = await fetch(url)
-      if (response.ok) {
-        const data = await response.json()
-        return koreaResults((data.features || []).map((feature: any) => ({
-          lng: feature.geometry.coordinates[0],
-          lat: feature.geometry.coordinates[1],
-          label: feature.properties.label || feature.properties.name || query,
-        })))
-      }
-    }
-    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}&limit=5&accept-language=zh-CN&countrycodes=kr&viewbox=${KOREA.minLng},${KOREA.maxLat},${KOREA.maxLng},${KOREA.minLat}&bounded=1`
-    const response = await fetch(url, { headers: { Accept: 'application/json' } })
+    const url = `${API_BASE}/api/geocode/?q=${encodeURIComponent(query)}`
+    const response = await fetch(url)
     if (!response.ok) return []
     const data = await response.json()
-    return koreaResults(data.map((item: any) => ({
-      lat: parseFloat(item.lat),
-      lng: parseFloat(item.lon),
-      label: item.display_name || query,
+    return koreaResults((data || []).map((item: any) => ({
+      lat: Number(item.lat),
+      lng: Number(item.lng),
+      label: item.label || query,
     })))
   } catch {
     return []

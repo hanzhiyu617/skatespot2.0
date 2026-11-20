@@ -1,3 +1,8 @@
+import json
+import os
+import urllib.parse
+import urllib.request
+
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, permissions, status as http_status
@@ -11,6 +16,88 @@ from .serializers import (
     ContractSerializer, LoginSerializer, ProfileSerializer, RegisterSerializer,
     ReviewSerializer, SkateSpotSerializer,
 )
+
+KOREA_BOUNDS = {'min_lat': 33.0, 'max_lat': 38.7, 'min_lng': 124.5, 'max_lng': 130.5}
+
+
+def _in_korea(lat, lng):
+    return (
+        KOREA_BOUNDS['min_lat'] <= lat <= KOREA_BOUNDS['max_lat']
+        and KOREA_BOUNDS['min_lng'] <= lng <= KOREA_BOUNDS['max_lng']
+    )
+
+
+class GeocodeView(APIView):
+    """Server-side geocoding proxy. Kakao Local is primary (great Korea POI coverage),
+    with Nominatim as a fallback. Keeps the Kakao key off the browser."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        query = (request.query_params.get('q') or '').strip()
+        if not query:
+            return Response([])
+        results = []
+        kakao_key = os.environ.get('KAKAO_REST_API_KEY', '')
+        if kakao_key:
+            results = self._kakao(query, kakao_key)
+        if not results:
+            results = self._nominatim(query)
+        return Response(results[:8])
+
+    def _kakao(self, query, key):
+        try:
+            url = 'https://dapi.kakao.com/v2/local/search/keyword.json?query={}&size=8'.format(
+                urllib.parse.quote(query)
+            )
+            req = urllib.request.Request(url, headers={'Authorization': 'KakaoAK {}'.format(key)})
+            with urllib.request.urlopen(req, timeout=8) as response:
+                data = json.loads(response.read().decode('utf-8'))
+            results = []
+            for doc in data.get('documents', []):
+                lat, lng = float(doc['y']), float(doc['x'])
+                if not _in_korea(lat, lng):
+                    continue
+                label = doc.get('place_name') or query
+                address = doc.get('road_address_name') or doc.get('address_name')
+                if address:
+                    label = '{} · {}'.format(label, address)
+                results.append({'lat': lat, 'lng': lng, 'label': label})
+            return results
+        except Exception:
+            return []
+
+    def _nominatim(self, query):
+        try:
+            params = urllib.parse.urlencode({
+                'format': 'jsonv2',
+                'q': query,
+                'limit': 8,
+                'accept-language': 'ko',
+                'countrycodes': 'kr',
+                'viewbox': '{},{},{},{}'.format(
+                    KOREA_BOUNDS['min_lng'], KOREA_BOUNDS['max_lat'],
+                    KOREA_BOUNDS['max_lng'], KOREA_BOUNDS['min_lat'],
+                ),
+                'bounded': 1,
+            })
+            url = 'https://nominatim.openstreetmap.org/search?' + params
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'SkatespotMap/1.0 (contact@skatespot.app)',
+            })
+            with urllib.request.urlopen(req, timeout=8) as response:
+                data = json.loads(response.read().decode('utf-8'))
+            results = []
+            for item in data:
+                lat, lng = float(item['lat']), float(item['lon'])
+                if not _in_korea(lat, lng):
+                    continue
+                results.append({
+                    'lat': lat, 'lng': lng,
+                    'label': item.get('display_name') or query,
+                })
+            return results
+        except Exception:
+            return []
 
 
 class VenueAppListCreate(generics.ListCreateAPIView):

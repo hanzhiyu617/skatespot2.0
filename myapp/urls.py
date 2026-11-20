@@ -2,6 +2,7 @@ from django.urls import re_path
 
 from .models import StatusChoices
 from .views import (
+    GeocodeView,
     LoginView,
     ProfileView,
     RegisterView,
@@ -25,4 +26,5 @@ urlpatterns = [
     re_path(r'^profile/?$', ProfileView.as_view(), name='profile'),
     re_path(r'^profile/register/?$', RegisterView.as_view(), name='profile-register'),
     re_path(r'^profile/login/?$', LoginView.as_view(), name='profile-login'),
+    re_path(r'^geocode/?$', GeocodeView.as_view(), name='geocode'),
 ]
