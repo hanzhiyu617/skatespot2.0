@@ -11,10 +11,65 @@ import {
   MapPin,
   Navigation,
   Plus,
+  Search,
+  User,
   X,
 } from 'lucide-react'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
+const STADIA_KEY = import.meta.env.VITE_STADIA_API_KEY || ''
+const STADIA_TILE = 'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}.png'
+const OSM_TILE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+
+const tileUrl = STADIA_KEY
+  ? `${STADIA_TILE}?api_key=${STADIA_KEY}`
+  : OSM_TILE
+const tileAttribution = STADIA_KEY
+  ? '&copy; OpenStreetMap contributors &copy; Stadia Maps'
+  : '&copy; OpenStreetMap contributors'
+
+interface Profile {
+  uid: string
+  name: string
+  avatar_data: string
+  is_registered: boolean
+  username: string
+}
+
+interface GeocodeResult {
+  lat: number
+  lng: number
+  label: string
+}
+
+async function geocode(query: string): Promise<GeocodeResult[]> {
+  if (!query.trim()) return []
+  try {
+    if (STADIA_KEY) {
+      const url = `https://api.stadiamaps.com/geocoding/v1/autocomplete?text=${encodeURIComponent(query)}&api_key=${STADIA_KEY}&limit=5`
+      const response = await fetch(url)
+      if (response.ok) {
+        const data = await response.json()
+        return (data.features || []).map((feature: any) => ({
+          lng: feature.geometry.coordinates[0],
+          lat: feature.geometry.coordinates[1],
+          label: feature.properties.label || feature.properties.name || query,
+        }))
+      }
+    }
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}&limit=5&accept-language=zh-CN`
+    const response = await fetch(url, { headers: { Accept: 'application/json' } })
+    if (!response.ok) return []
+    const data = await response.json()
+    return data.map((item: any) => ({
+      lat: parseFloat(item.lat),
+      lng: parseFloat(item.lon),
+      label: item.display_name || query,
+    }))
+  } catch {
+    return []
+  }
+}
 
 const PIN_ART = `
   <path d="M12 1.8a6.2 6.2 0 0 0-6.2 6.2c0 4.6 6.2 10.4 6.2 10.4s6.2-5.8 6.2-10.4A6.2 6.2 0 0 0 12 1.8z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
@@ -53,6 +108,7 @@ interface ApiSpot {
 interface ApiReview {
   id: number
   author?: string
+  author_avatar?: string
   text: string
   image_url?: string | null
   created_at: string
@@ -83,6 +139,7 @@ type CityKey =
 interface Review {
   id: string
   author: string
+  authorAvatar?: string
   text: string
   date: string
   imageUrl?: string | null
@@ -497,6 +554,7 @@ function apiSpotToSpot(item: ApiSpot): Spot {
   const reviews = (item.reviews || []).map((review) => ({
     id: `review-${review.id}`,
     author: review.author || '滑手',
+    authorAvatar: review.author_avatar || undefined,
     text: review.text,
     date: new Date(review.created_at).toLocaleDateString('zh-CN'),
     imageUrl: review.image_url || undefined,
@@ -556,8 +614,8 @@ function MapView({
       attributionControl: true,
     }).setView(cityInfo[city].center, cityInfo[city].zoom)
 
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
+    L.tileLayer(tileUrl, {
+      attribution: tileAttribution,
       maxZoom: 19,
     }).addTo(map)
 
@@ -638,7 +696,11 @@ function LocationPicker({
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.Marker | null>(null)
   const onChangeRef = useRef(onChange)
+  const placeRef = useRef<(position: [number, number]) => void>(() => {})
   const [hasPick, setHasPick] = useState(false)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<GeocodeResult[]>([])
+  const [searching, setSearching] = useState(false)
 
   useEffect(() => {
     onChangeRef.current = onChange
@@ -648,10 +710,10 @@ function LocationPicker({
     if (!containerRef.current || mapRef.current) return
     const map = L.map(containerRef.current, {
       zoomControl: false,
-      attributionControl: false,
+      attributionControl: STADIA_KEY ? true : false,
     }).setView(cityInfo[city].center, 14)
 
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
+    L.tileLayer(tileUrl, { maxZoom: 19, attribution: tileAttribution }).addTo(map)
     L.control.zoom({ position: 'bottomright' }).addTo(map)
 
     const pinIcon = L.divIcon({
@@ -674,6 +736,7 @@ function LocationPicker({
       onChangeRef.current(position)
       setHasPick(true)
     }
+    placeRef.current = place
 
     map.on('click', (event: L.LeafletMouseEvent) => place([event.latlng.lat, event.latlng.lng]))
 
@@ -699,41 +762,116 @@ function LocationPicker({
     }
     onChangeRef.current(cityInfo[city].center)
     setHasPick(false)
+    setResults([])
+    setQuery('')
   }, [city])
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults([])
+      return
+    }
+    let cancelled = false
+    setSearching(true)
+    const timer = window.setTimeout(async () => {
+      const data = await geocode(query)
+      if (!cancelled) {
+        setResults(data)
+        setSearching(false)
+      }
+    }, 350)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [query])
+
+  const selectResult = (result: GeocodeResult) => {
+    const position: [number, number] = [result.lat, result.lng]
+    mapRef.current?.flyTo(position, 16, { duration: 0.8 })
+    placeRef.current(position)
+    setResults([])
+    setQuery(result.label)
+  }
 
   const recenter = () => {
     const map = mapRef.current
     if (!map) return
-    map.setView(cityInfo[city].center, 14)
+    map.flyTo(cityInfo[city].center, 14, { duration: 0.6 })
     if (markerRef.current) {
       markerRef.current.remove()
       markerRef.current = null
     }
     onChangeRef.current(cityInfo[city].center)
     setHasPick(false)
+    setResults([])
+    setQuery('')
+  }
+
+  const confirm = () => {
+    const map = mapRef.current
+    if (!map) return
+    const center = map.getCenter()
+    placeRef.current([center.lat, center.lng])
+    setResults([])
   }
 
   return (
     <div className="relative w-full overflow-hidden rounded-xl border border-gray-200">
-      <div ref={containerRef} style={{ height: 208 }} className="w-full picker-map" />
-      <div className="pointer-events-none absolute left-3 top-3 z-[500] rounded-full border border-gray-100 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-gray-700 frosted">
-        {hasPick ? '已选点 · 可拖动图钉微调' : '点击地图任意位置选点'}
+      <div className="relative z-[600] flex items-center gap-2 border-b border-gray-100 bg-white px-3 py-2">
+        <Search size={15} className="shrink-0 text-gray-400" />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={STADIA_KEY ? '搜索地址或地点（Stadia）…' : '搜索地址或地点…'}
+          className="w-full bg-transparent text-xs outline-none placeholder:text-gray-400"
+        />
+        {searching && <span className="shrink-0 text-[10px] text-gray-400">搜索中…</span>}
       </div>
-      <button
-        type="button"
-        onClick={recenter}
-        className="absolute bottom-3 left-3 z-[500] rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm transition hover:border-ink"
-      >
-        回到{cityInfo[city].label}中心
-      </button>
+      {results.length > 0 && (
+        <div className="absolute inset-x-0 top-[38px] z-[700] max-h-44 overflow-y-auto border-b border-gray-100 bg-white shadow-soft">
+          {results.map((result, index) => (
+            <button
+              key={index}
+              type="button"
+              onClick={() => selectResult(result)}
+              className="flex w-full items-start gap-2 px-3 py-2 text-left transition hover:bg-gray-50"
+            >
+              <MapPin size={13} className="mt-0.5 shrink-0 text-accent" />
+              <span className="line-clamp-2 text-[11px] text-gray-700">{result.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div ref={containerRef} style={{ height: 208 }} className="w-full picker-map" />
+      <div className="pointer-events-none absolute left-3 top-[48px] z-[500] rounded-full border border-gray-100 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-gray-700 frosted">
+        {hasPick ? '已选点 · 可拖动图钉微调' : '搜索地点，或点击地图任意位置选点'}
+      </div>
+      <div className="absolute bottom-3 left-3 right-3 z-[500] flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={recenter}
+          className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 shadow-sm transition hover:border-ink"
+        >
+          回到{cityInfo[city].label}中心
+        </button>
+        <button
+          type="button"
+          onClick={confirm}
+          className="rounded-full bg-ink px-4 py-1.5 text-[11px] font-semibold text-white shadow-sm transition hover:opacity-90"
+        >
+          确认当前位置
+        </button>
+      </div>
     </div>
   )
 }
 
 function SpotImage({ src, alt, className }: { src?: string | null; alt: string; className: string }) {
   const [failed, setFailed] = useState(false)
+  useEffect(() => setFailed(false), [src])
   if (src && !failed) {
-    return <img src={src} alt={alt} className={`${className} object-cover`} onError={() => setFailed(true)} />
+    return <img key={src} src={src} alt={alt} className={`${className} object-cover`} onError={() => setFailed(true)} />
   }
   return <div className={`gray-block ${className}`} />
 }
@@ -842,7 +980,16 @@ function SpotDetail({
           {spot.reviews.map((review) => (
             <div key={review.id} className="rounded-2xl border border-gray-100 p-4">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-ink">{review.author}</span>
+                <div className="flex items-center gap-2">
+                  {review.authorAvatar ? (
+                    <img src={review.authorAvatar} alt="" className="h-6 w-6 rounded-full object-cover" />
+                  ) : (
+                    <span className="grid h-6 w-6 place-items-center rounded-full bg-gray-100 text-gray-400">
+                      <User size={12} />
+                    </span>
+                  )}
+                  <span className="text-xs font-semibold text-ink">{review.author}</span>
+                </div>
                 <span className="text-[11px] text-gray-400">{review.date}</span>
               </div>
               <p className="mt-2 text-sm leading-relaxed text-gray-600">{review.text}</p>
@@ -1245,6 +1392,190 @@ function UploadModal({
   )
 }
 
+function AccountModal({
+  profile,
+  onUpdated,
+  onClose,
+}: {
+  profile: Profile
+  onUpdated: (profile: Profile) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(profile.name)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState<'register' | 'login'>('register')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+
+  const patch = async (payload: Record<string, string>) => {
+    setBusy(true)
+    setMessage('')
+    setError('')
+    try {
+      const response = await fetch(`${API_BASE}/api/profile/`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: profile.uid, ...payload }),
+      })
+      const data = await response.json()
+      if (response.ok) {
+        onUpdated(data)
+        setMessage('已保存')
+      } else {
+        setError(data.detail || '保存失败')
+      }
+    } catch {
+      setError('网络连接失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveName = () => {
+    if (!name.trim()) {
+      setError('名字不能为空')
+      return
+    }
+    patch({ name: name.trim() })
+  }
+
+  const uploadAvatar = (file?: File) => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => patch({ avatar_data: String(reader.result || '') })
+    reader.readAsDataURL(file)
+  }
+
+  const submitAccount = async (event: FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setMessage('')
+    setError('')
+    try {
+      const url = mode === 'register' ? `${API_BASE}/api/profile/register/` : `${API_BASE}/api/profile/login/`
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: profile.uid, username, password }),
+      })
+      const data = await response.json()
+      if (response.ok) {
+        onUpdated(data)
+        setMessage(mode === 'register' ? '注册成功，已绑定正式账号' : '登录成功')
+        setPassword('')
+      } else {
+        setError(data.username?.[0] || data.detail || '操作失败')
+      }
+    } catch {
+      setError('网络连接失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <ModalShell onClose={onClose}>
+      <h2 className="pr-8 text-lg font-bold text-ink">个人中心</h2>
+      <p className="mt-1 text-xs text-gray-500">未注册也能上传场地与评价，身份会自动绑定此设备。</p>
+
+      <div className="mt-5 flex items-center gap-4">
+        <label className="relative cursor-pointer">
+          {profile.avatar_data ? (
+            <img src={profile.avatar_data} alt="头像" className="h-16 w-16 rounded-2xl object-cover" />
+          ) : (
+            <div className="grid h-16 w-16 place-items-center rounded-2xl bg-gray-100 text-gray-400">
+              <User size={24} />
+            </div>
+          )}
+          <span className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-ink text-white">
+            <ImagePlus size={12} />
+          </span>
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(event) => uploadAvatar(event.target.files?.[0])}
+          />
+        </label>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-ink">{profile.name}</p>
+          <p className="text-[11px] text-gray-400">
+            {profile.is_registered ? `正式账号 · ${profile.username}` : '本机访客身份'}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5">
+        <label className="mb-1.5 block text-xs font-semibold text-gray-500">修改昵称</label>
+        <div className="flex gap-2">
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            className="min-w-0 flex-1 rounded-xl border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-accent"
+          />
+          <button
+            type="button"
+            onClick={saveName}
+            disabled={busy}
+            className="rounded-xl bg-ink px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            保存
+          </button>
+        </div>
+      </div>
+
+      {message && <p className="mt-3 rounded-xl bg-green-50 px-4 py-2.5 text-center text-xs font-medium text-green-700">{message}</p>}
+      {error && <p className="mt-3 rounded-xl bg-red-50 px-4 py-2.5 text-center text-xs text-red-600">{error}</p>}
+
+      {!profile.is_registered && (
+        <form onSubmit={submitAccount} className="mt-6 border-t border-gray-100 pt-5">
+          <p className="mb-3 text-xs font-semibold text-gray-500">
+            连接 Django 账号<span className="ml-1 font-normal text-gray-400">（多设备同步）</span>
+          </p>
+          <div className="mb-3 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setMode('register')}
+              className={`flex-1 rounded-full py-2 text-xs font-semibold transition ${mode === 'register' ? 'bg-ink text-white' : 'border border-gray-200 text-gray-600'}`}
+            >
+              注册
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('login')}
+              className={`flex-1 rounded-full py-2 text-xs font-semibold transition ${mode === 'login' ? 'bg-ink text-white' : 'border border-gray-200 text-gray-600'}`}
+            >
+              登录
+            </button>
+          </div>
+          <input
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="用户名"
+            className="mb-2 w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-accent"
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="密码"
+            className="w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-accent"
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            className="mt-3 w-full rounded-full bg-accent py-2.5 text-sm font-semibold text-ink disabled:opacity-60"
+          >
+            {busy ? '处理中…' : mode === 'register' ? '注册并绑定' : '登录并绑定'}
+          </button>
+        </form>
+      )}
+    </ModalShell>
+  )
+}
+
 export default function App() {
   const [spots, setSpots] = useState<Spot[]>(initialSpots)
   const [city, setCity] = useState<CityKey>('Seoul')
@@ -1254,6 +1585,40 @@ export default function App() {
   const [filterOpen, setFilterOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [mobileView, setMobileView] = useState<'list' | 'map'>('list')
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [accountOpen, setAccountOpen] = useState(false)
+
+  useEffect(() => {
+    let uid = localStorage.getItem('skatespot_uid')
+    if (!uid) {
+      uid = 'device-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2))
+      localStorage.setItem('skatespot_uid', uid)
+    }
+    const currentUid = uid
+    fetch(`${API_BASE}/api/profile/?uid=${encodeURIComponent(currentUid)}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: Profile | null) => {
+        if (data) setProfile(data)
+        else {
+          setProfile({
+            uid: currentUid,
+            name: '滑手' + Math.floor(10 + Math.random() * 90),
+            avatar_data: '',
+            is_registered: false,
+            username: '',
+          })
+        }
+      })
+      .catch(() => {
+        setProfile({
+          uid: currentUid,
+          name: '滑手' + Math.floor(10 + Math.random() * 90),
+          avatar_data: '',
+          is_registered: false,
+          username: '',
+        })
+      })
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1300,7 +1665,9 @@ export default function App() {
   const addReview = (id: string, text: string, image?: File) => {
     const spotId = Number(id.replace('spot-', ''))
     const payload = new FormData()
-    payload.append('author', '我')
+    payload.append('author', profile?.name || '滑手')
+    payload.append('author_uid', profile?.uid || '')
+    payload.append('author_avatar', profile?.avatar_data || '')
     payload.append('text', text || '分享一张场地照片')
     if (image) payload.append('image', image)
 
@@ -1314,6 +1681,7 @@ export default function App() {
         const review: Review = {
           id: `review-${data.id}`,
           author: data.author || '我',
+          authorAvatar: data.author_avatar || profile?.avatar_data || undefined,
           text: data.text,
           date: new Date(data.created_at).toLocaleDateString('zh-CN'),
           imageUrl: data.image_url || undefined,
@@ -1335,6 +1703,8 @@ export default function App() {
     payload.append('price', input.price || '')
     payload.append('price_unit', input.priceUnit || 'session')
     payload.append('review', input.review)
+    payload.append('submitter_name', profile?.name || '匿名滑手')
+    payload.append('submitter_uid', profile?.uid || '')
     payload.append('latitude', String(input.lat ?? base[0]))
     payload.append('longitude', String(input.lng ?? base[1]))
     if (input.image) payload.append('image', input.image)
@@ -1385,6 +1755,21 @@ export default function App() {
                 className="inline-flex items-center gap-1.5 rounded-full bg-ink px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-gray-800"
               >
                 <Plus size={14} /> 上传场地
+              </button>
+              <button
+                type="button"
+                onClick={() => setAccountOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 frosted py-1 pl-1 pr-3 text-xs font-medium text-gray-700 transition hover:border-gray-400"
+                aria-label="个人中心"
+              >
+                {profile?.avatar_data ? (
+                  <img src={profile.avatar_data} alt="" className="h-7 w-7 rounded-full object-cover" />
+                ) : (
+                  <span className="grid h-7 w-7 place-items-center rounded-full bg-gray-100 text-gray-500">
+                    <User size={14} />
+                  </span>
+                )}
+                <span className="hidden max-w-20 truncate sm:inline">{profile?.name || '我的'}</span>
               </button>
             </div>
           </div>
@@ -1472,7 +1857,7 @@ export default function App() {
           visible={mobileView === 'map'}
         />
         <div className="pointer-events-none absolute left-4 top-4 rounded-full border border-gray-100 bg-white/80 px-4 py-2 text-[11px] font-medium text-gray-600 frosted">
-          OpenStreetMap · Light · Korea
+          {STADIA_KEY ? 'Stadia Maps · Light · Korea' : 'OpenStreetMap · Light · Korea'}
         </div>
       </main>
 
@@ -1518,6 +1903,14 @@ export default function App() {
       )}
 
       {uploadOpen && <UploadModal onClose={() => setUploadOpen(false)} onSubmit={submitApplication} />}
+
+      {accountOpen && profile && (
+        <AccountModal
+          profile={profile}
+          onUpdated={(next) => setProfile(next)}
+          onClose={() => setAccountOpen(false)}
+        />
+      )}
     </div>
   )
 }

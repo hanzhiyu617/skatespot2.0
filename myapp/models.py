@@ -1,7 +1,77 @@
 import base64
+import hashlib
+import html
 import mimetypes
+import random
 
+from django.conf import settings
 from django.db import models
+
+
+AVATAR_COLORS = [
+    '#D4AF37', '#171717', '#4F6BED', '#E07A5F', '#3D8B72',
+    '#9B5DE5', '#F4A261', '#2A9D8F', '#E63946', '#457B9D',
+]
+
+NAME_PREFIXES = ['闪电', '蓝色', '快乐', '斜坡', '夜行', '火山', '追风', '小麦', '极光', '街头']
+NAME_SUFFIXES = ['滑手', '板仔', '海鸥', '山川', '狐狸', '影子', '火箭', '旅人', '陀螺', '玩家']
+
+
+def random_display_name():
+    return '{}{}{}'.format(
+        random.choice(NAME_PREFIXES),
+        random.choice(NAME_SUFFIXES),
+        random.randint(10, 99),
+    )
+
+
+def default_avatar(name, seed=''):
+    """Deterministic identicon SVG data URL, no external service required."""
+    label = (name or '?').strip()
+    parts = label.split()
+    initials = ''.join(part[0] for part in parts[:2]).upper() or label[:1].upper() or '?'
+    digest = hashlib.md5((seed or label).encode('utf-8')).hexdigest()
+    start = AVATAR_COLORS[int(digest[0], 16) % len(AVATAR_COLORS)]
+    end = AVATAR_COLORS[int(digest[1], 16) % len(AVATAR_COLORS)]
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">'
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+        '<stop offset="0" stop-color="{start}"/><stop offset="1" stop-color="{end}"/>'
+        '</linearGradient></defs>'
+        '<rect width="96" height="96" rx="24" fill="url(#g)"/>'
+        '<text x="48" y="48" fill="#fff" font-family="Arial,sans-serif" font-size="36" '
+        'font-weight="700" text-anchor="middle" dominant-baseline="central">{initials}</text>'
+        '</svg>'
+    ).format(start=start, end=end, initials=html.escape(initials))
+    return 'data:image/svg+xml;base64,' + base64.b64encode(svg.encode('utf-8')).decode('ascii')
+
+
+def refresh_image_data(instance):
+    """Regenerate base64 when the image was added or replaced. Returns True if changed."""
+    previous_name = None
+    if instance.pk:
+        previous_name = (
+            type(instance).objects.filter(pk=instance.pk)
+            .values_list('image', flat=True).first()
+        )
+    current_name = instance.image.name if instance.image else None
+    if previous_name != current_name:
+        instance.image_data = image_to_data_url(instance.image) if instance.image else ''
+        return True
+    return False
+
+
+def image_url_for(instance):
+    """Prefer embedded base64; add a version query for media URLs to bust caches."""
+    if instance.image_data:
+        return instance.image_data
+    if instance.image:
+        url = instance.image.url
+        version = getattr(instance, 'updated_at', None) or getattr(instance, 'submitted_at', None)
+        if version:
+            return '{}?v={}'.format(url, int(version.timestamp()))
+        return url
+    return None
 
 
 def image_to_data_url(image_field):
@@ -91,6 +161,8 @@ class Contract(models.Model):
         default=PriceUnitChoices.SESSION, blank=True,
     )
     review = models.TextField('个人评价', blank=True)
+    submitter_name = models.CharField('提交人', max_length=100, blank=True, default='')
+    submitter_uid = models.CharField('提交人设备标识', max_length=64, blank=True, default='')
     image = models.ImageField(
         '上传图片', upload_to='venue_apps/%Y/%m/%d/', blank=True, null=True
     )
@@ -112,8 +184,7 @@ class Contract(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        if self.image and not self.image_data:
-            self.image_data = image_to_data_url(self.image)
+        refresh_image_data(self)
         super().save(*args, **kwargs)
 
     def terrain_labels(self):
@@ -167,8 +238,7 @@ class SkateSpot(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        if self.image and not self.image_data:
-            self.image_data = image_to_data_url(self.image)
+        refresh_image_data(self)
         super().save(*args, **kwargs)
 
     def terrain_labels(self):
@@ -183,6 +253,8 @@ class Review(models.Model):
         verbose_name='场地',
     )
     author = models.CharField('昵称', max_length=100, default='滑手')
+    author_uid = models.CharField('评价人设备标识', max_length=64, blank=True, default='')
+    author_avatar = models.TextField('评价人头像', blank=True, default='')
     text = models.TextField('评价内容')
     image = models.ImageField(
         '评价图片', upload_to='reviews/%Y/%m/%d/', blank=True, null=True
@@ -200,8 +272,36 @@ class Review(models.Model):
         return '{} - {}'.format(self.spot.name, self.author)
 
     def save(self, *args, **kwargs):
-        if self.image and not self.image_data:
-            self.image_data = image_to_data_url(self.image)
+        refresh_image_data(self)
+        super().save(*args, **kwargs)
+
+
+class Profile(models.Model):
+    """Device-bound lightweight identity, optionally linked to a Django auth user."""
+    uid = models.CharField('设备标识', max_length=64, unique=True)
+    name = models.CharField('昵称', max_length=100, blank=True)
+    avatar_data = models.TextField('头像数据', blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='skatespot_profiles',
+        verbose_name='关联账号',
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'profile'
+        verbose_name = '用户身份'
+        verbose_name_plural = '用户身份'
+
+    def __str__(self):
+        return self.name or self.uid
+
+    def save(self, *args, **kwargs):
+        if not self.name:
+            self.name = random_display_name()
+        if not self.avatar_data:
+            self.avatar_data = default_avatar(self.name, self.uid)
         super().save(*args, **kwargs)
 
 
@@ -222,9 +322,8 @@ def sync_contract_to_spot(contract):
         spot.price = contract.price
         spot.price_unit = contract.price_unit
         spot.review = contract.review
-        if contract.image:
-            spot.image = contract.image
-            spot.image_data = contract.image_data
+        spot.image = contract.image
+        spot.image_data = contract.image_data
         spot.is_active = True
         spot.save()
     else:

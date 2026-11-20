@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Contract, Review, SkateSpot, sync_contract_to_spot
+from .models import Contract, Profile, Review, SkateSpot, sync_contract_to_spot
 
 
 @admin.register(Contract)
@@ -31,7 +31,7 @@ class ContractAdmin(admin.ModelAdmin):
             'fields': (
                 'name', 'korean_name', 'city', 'district', 'venue_type',
                 'latitude', 'longitude', 'terrains', 'price', 'price_unit',
-                'image', 'review',
+                'image', 'review', 'submitter_name', 'submitter_uid',
             )
         }),
         ('审核', {
@@ -59,6 +59,22 @@ class ReviewAdmin(admin.ModelAdmin):
     list_filter = ('created_at',)
     search_fields = ('author', 'text', 'spot__name')
     readonly_fields = ('created_at',)
+
+    def has_add_permission(self, request):
+        return request.user.is_superuser
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+
+@admin.register(Profile)
+class ProfileAdmin(admin.ModelAdmin):
+    list_display = ('name', 'uid', 'user', 'updated_at')
+    search_fields = ('name', 'uid', 'user__username')
+    readonly_fields = ('created_at', 'updated_at')
 
     def has_add_permission(self, request):
         return request.user.is_superuser
