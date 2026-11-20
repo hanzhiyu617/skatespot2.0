@@ -42,30 +42,44 @@ interface GeocodeResult {
   label: string
 }
 
+const KOREA = { minLat: 33.0, maxLat: 38.7, minLng: 124.5, maxLng: 130.5 }
+const koreaBounds: L.LatLngBoundsExpression = [
+  [KOREA.minLat, KOREA.minLng],
+  [KOREA.maxLat, KOREA.maxLng],
+]
+
+function isInKorea(lat: number, lng: number): boolean {
+  return lat >= KOREA.minLat && lat <= KOREA.maxLat && lng >= KOREA.minLng && lng <= KOREA.maxLng
+}
+
+function koreaResults(items: GeocodeResult[]): GeocodeResult[] {
+  return items.filter((item) => isInKorea(item.lat, item.lng))
+}
+
 async function geocode(query: string): Promise<GeocodeResult[]> {
   if (!query.trim()) return []
   try {
     if (STADIA_KEY) {
-      const url = `https://api.stadiamaps.com/geocoding/v1/autocomplete?text=${encodeURIComponent(query)}&api_key=${STADIA_KEY}&limit=5`
+      const url = `https://api.stadiamaps.com/geocoding/v1/autocomplete?text=${encodeURIComponent(query)}&api_key=${STADIA_KEY}&limit=5&boundary.country=KOR&boundary.rect.min_lat=${KOREA.minLat}&boundary.rect.min_lon=${KOREA.minLng}&boundary.rect.max_lat=${KOREA.maxLat}&boundary.rect.max_lon=${KOREA.maxLng}`
       const response = await fetch(url)
       if (response.ok) {
         const data = await response.json()
-        return (data.features || []).map((feature: any) => ({
+        return koreaResults((data.features || []).map((feature: any) => ({
           lng: feature.geometry.coordinates[0],
           lat: feature.geometry.coordinates[1],
           label: feature.properties.label || feature.properties.name || query,
-        }))
+        })))
       }
     }
-    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}&limit=5&accept-language=zh-CN`
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}&limit=5&accept-language=zh-CN&countrycodes=kr&viewbox=${KOREA.minLng},${KOREA.maxLat},${KOREA.maxLng},${KOREA.minLat}&bounded=1`
     const response = await fetch(url, { headers: { Accept: 'application/json' } })
     if (!response.ok) return []
     const data = await response.json()
-    return data.map((item: any) => ({
+    return koreaResults(data.map((item: any) => ({
       lat: parseFloat(item.lat),
       lng: parseFloat(item.lon),
       label: item.display_name || query,
-    }))
+    })))
   } catch {
     return []
   }
@@ -701,6 +715,7 @@ function LocationPicker({
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<GeocodeResult[]>([])
   const [searching, setSearching] = useState(false)
+  const [hint, setHint] = useState('')
 
   useEffect(() => {
     onChangeRef.current = onChange
@@ -711,6 +726,9 @@ function LocationPicker({
     const map = L.map(containerRef.current, {
       zoomControl: false,
       attributionControl: STADIA_KEY ? true : false,
+      maxBounds: koreaBounds,
+      maxBoundsViscosity: 1,
+      minZoom: 7,
     }).setView(cityInfo[city].center, 14)
 
     L.tileLayer(tileUrl, { maxZoom: 19, attribution: tileAttribution }).addTo(map)
@@ -723,14 +741,30 @@ function LocationPicker({
       iconAnchor: [20, 42],
     })
 
-    const place = (position: [number, number]) => {
+    const place = (position: [number, number], warn = false) => {
+      if (!isInKorea(position[0], position[1])) {
+        if (warn) {
+          setHint('只能选择韩国境内的位置')
+          window.setTimeout(() => setHint(''), 2200)
+        }
+        return
+      }
+      setHint('')
       if (markerRef.current) {
         markerRef.current.setLatLng(position)
       } else {
         markerRef.current = L.marker(position, { icon: pinIcon, draggable: true }).addTo(map)
+        markerRef.current.on('drag', () => {
+          const moved = markerRef.current?.getLatLng()
+          if (moved && !isInKorea(moved.lat, moved.lng)) {
+            markerRef.current?.setLatLng(position)
+            setHint('只能选择韩国境内的位置')
+            window.setTimeout(() => setHint(''), 2200)
+          }
+        })
         markerRef.current.on('dragend', () => {
           const moved = markerRef.current?.getLatLng()
-          if (moved) onChangeRef.current([moved.lat, moved.lng])
+          if (moved && isInKorea(moved.lat, moved.lng)) onChangeRef.current([moved.lat, moved.lng])
         })
       }
       onChangeRef.current(position)
@@ -738,7 +772,7 @@ function LocationPicker({
     }
     placeRef.current = place
 
-    map.on('click', (event: L.LeafletMouseEvent) => place([event.latlng.lat, event.latlng.lng]))
+    map.on('click', (event: L.LeafletMouseEvent) => place([event.latlng.lat, event.latlng.lng], true))
 
     mapRef.current = map
     window.setTimeout(() => map.invalidateSize(), 100)
@@ -812,6 +846,11 @@ function LocationPicker({
     const map = mapRef.current
     if (!map) return
     const center = map.getCenter()
+    if (!isInKorea(center.lat, center.lng)) {
+      setHint('只能选择韩国境内的位置')
+      window.setTimeout(() => setHint(''), 2200)
+      return
+    }
     placeRef.current([center.lat, center.lng])
     setResults([])
   }
@@ -823,7 +862,7 @@ function LocationPicker({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder={STADIA_KEY ? '搜索地址或地点（Stadia）…' : '搜索地址或地点…'}
+          placeholder={STADIA_KEY ? '搜索韩国境内地址（Stadia）…' : '搜索韩国境内地址…'}
           className="w-full bg-transparent text-xs outline-none placeholder:text-gray-400"
         />
         {searching && <span className="shrink-0 text-[10px] text-gray-400">搜索中…</span>}
@@ -844,8 +883,12 @@ function LocationPicker({
         </div>
       )}
       <div ref={containerRef} style={{ height: 208 }} className="w-full picker-map" />
-      <div className="pointer-events-none absolute left-3 top-[48px] z-[500] rounded-full border border-gray-100 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-gray-700 frosted">
-        {hasPick ? '已选点 · 可拖动图钉微调' : '搜索地点，或点击地图任意位置选点'}
+      <div className={`pointer-events-none absolute left-3 top-[48px] z-[500] rounded-full border px-3 py-1.5 text-[11px] font-medium frosted ${
+        hint
+          ? 'border-red-200 bg-red-50 text-red-600'
+          : 'border-gray-100 bg-white/90 text-gray-700'
+      }`}>
+        {hint || (hasPick ? '已选点 · 可拖动图钉微调（仅限韩国）' : '仅可搜索/选点韩国境内')}
       </div>
       <div className="absolute bottom-3 left-3 right-3 z-[500] flex items-center justify-between gap-2">
         <button
